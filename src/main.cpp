@@ -1,8 +1,8 @@
 /*
- * snap - Bind aliases to executables so you can launch apps by name.
+ * snap - Bind aliases to files so you can launch them by name.
  *
  * Usage:
- *   snap <alias> <path-to-executable>   Register an alias
+ *   snap <alias> <path-to-target>       Register an alias
  *   snap list                           List all registered aliases
  *   snap remove <alias>                 Remove an alias
  *   snap --help                         Show help
@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -37,7 +38,7 @@ namespace fs = std::filesystem;
 
 // ── version ────────────────────────────────────────────────────────────────
 
-static constexpr const char* VERSION = "1.0.0";
+static constexpr const char* VERSION = "1.0.1";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -89,6 +90,25 @@ static std::string unquote(const std::string& s) {
         return s.substr(1, s.size() - 2);
     return s;
 }
+
+#ifdef _WIN32
+static bool is_windows_executable_extension(const fs::path& targetPath) {
+    std::string ext = targetPath.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".exe" || ext == ".com" || ext == ".bat" || ext == ".cmd";
+}
+#else
+static std::string shell_quote(const std::string& value) {
+    std::string out = "'";
+    for (char c : value) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+#endif
 
 static std::vector<AliasEntry> load_registry() {
     std::vector<AliasEntry> entries;
@@ -302,7 +322,13 @@ static void create_shim(const std::string& alias, const std::string& target) {
     }
 
     f << "@echo off\n";
-    f << "\"" << target << "\" %*\n";
+    f << "setlocal\n";
+    if (is_windows_executable_extension(fs::path(target))) {
+        f << "\"" << target << "\" %*\n";
+    } else {
+        // Use file association for non-executable files (txt, uproject, etc.)
+        f << "start \"\" \"" << target << "\" %*\n";
+    }
     f.close();
 }
 
@@ -326,7 +352,20 @@ static void create_shim(const std::string& alias, const std::string& target) {
     }
 
     f << "#!/bin/sh\n";
-    f << "exec \"" << target << "\" \"$@\"\n";
+    f << "target=" << shell_quote(target) << "\n";
+    f << "if [ -x \"$target\" ] && [ ! -d \"$target\" ]; then\n";
+    f << "  exec \"$target\" \"$@\"\n";
+    f << "fi\n";
+    f << "if command -v xdg-open >/dev/null 2>&1; then\n";
+    f << "  xdg-open \"$target\" >/dev/null 2>&1 &\n";
+    f << "  exit 0\n";
+    f << "fi\n";
+    f << "if command -v open >/dev/null 2>&1; then\n";
+    f << "  open \"$target\" \"$@\"\n";
+    f << "  exit $?\n";
+    f << "fi\n";
+    f << "echo \"error: no file opener available (xdg-open/open).\" >&2\n";
+    f << "exit 1\n";
     f.close();
 
     // Make executable
@@ -423,11 +462,11 @@ static bool self_install() {
     std::cout << "\n  ---------------------------------------------------------\n";
     std::cout << "  Setup complete! You can now type 'snap' in any new terminal.\n\n";
     std::cout << "  What is snap?\n";
-    std::cout << "    A lightweight tool to bind short aliases to executables.\n";
-    std::cout << "    Example: snap evr \"C:\\Program Files\\Everything\\Everything.exe\"\n";
-    std::cout << "    Then just type 'evr' to launch it.\n\n";
+    std::cout << "    A lightweight tool to bind short aliases to files, folders, and apps.\n";
+    std::cout << "    Example: snap game \"D:\\Games\\Project.uproject\"\n";
+    std::cout << "    Then just type 'game' to launch it.\n\n";
     std::cout << "  Quick reference:\n";
-    std::cout << "    snap <alias> <path>     Bind an alias to an executable\n";
+    std::cout << "    snap <alias> <path>     Bind an alias to a target path\n";
     std::cout << "    snap list               List all your aliases\n";
     std::cout << "    snap remove <alias>     Remove an alias\n";
     std::cout << "    snap --help             Full help\n";
@@ -449,20 +488,20 @@ static bool self_install() {
 
 static void print_help() {
     std::cout << R"(
-  snap - bind aliases to executables
+  snap - bind aliases to target paths
 
   Usage:
-    snap <alias> <path>     Register an alias for an executable
+    snap <alias> <path>     Register an alias for a file, folder, or executable
     snap list               List all registered aliases
     snap remove <alias>     Remove a registered alias
     snap --help, -h         Show this help message
     snap --version, -v      Show version
 
   Examples:
-    snap evr "C:\Program Files (x86)\Everything\Everything.exe"
-    snap code "/usr/local/bin/code"
+    snap game "D:\Games\Project.uproject"
+    snap notes "C:\Users\me\Documents\todo.txt"
     snap list
-    snap remove evr
+    snap remove game
 
   After adding an alias, open a new terminal and type the alias name
   to launch the application.
@@ -491,12 +530,6 @@ static int cmd_add(const std::string& alias, const std::string& target) {
     fs::path targetPath(target);
     if (!fs::exists(targetPath)) {
         std::cerr << "error: target path does not exist: " << target << "\n";
-        return 1;
-    }
-
-    if (fs::is_directory(targetPath)) {
-        std::cerr << "error: target must be an executable file, not a directory.\n";
-        std::cerr << "  Provide the full path to the .exe / binary.\n";
         return 1;
     }
 
@@ -622,7 +655,7 @@ int main(int argc, char* argv[]) {
 
     // Default: snap <alias> <path>
     if (argc < 3) {
-        std::cerr << "error: usage: snap <alias> <path-to-executable>\n";
+        std::cerr << "error: usage: snap <alias> <path-to-target>\n";
         std::cerr << "  Run 'snap --help' for more information.\n";
         return 1;
     }

@@ -1,9 +1,9 @@
 # snap
 
-snap lets you bind a short alias to any executable on your system. Once bound, you can launch that app by typing the alias in any terminal.
+snap lets you bind a short alias to any file or folder path on your system. Once bound, you can launch that target by typing the alias in any terminal.
 
 ```
-snap <alias> <path-to-executable>
+snap <alias> <path-to-target>
 ```
 
 That's it.
@@ -26,7 +26,7 @@ cmake --build build --config Release
 ## Usage
 
 ```
-snap <alias> <path>       Bind an alias to an executable
+snap <alias> <path>       Bind an alias to a file path
 snap list                 List all registered aliases
 snap remove <alias>       Remove an alias
 snap --help               Show help
@@ -54,8 +54,8 @@ After the first run, open a new terminal and snap works globally. The self-insta
 ## How it works
 
 1. `snap <alias> <path>` creates a thin launcher shim in `~/.snap/bin/`:
-   - Windows: `<alias>.cmd` that calls the target exe
-   - macOS/Linux: `<alias>` shell script that execs the target binary
+   - Windows: `<alias>.cmd` that runs executables directly and opens non-executable files with file association
+   - macOS/Linux: `<alias>` shell script that executes binaries and opens non-executable files with the system opener
 2. A JSON registry at `~/.snap/aliases.json` tracks all bindings.
 3. Since `~/.snap/bin/` is on your PATH, typing the alias launches the app.
 
@@ -63,7 +63,7 @@ After the first run, open a new terminal and snap works globally. The self-insta
 
 - Aliases can contain letters, numbers, hyphens (`-`), and underscores (`_`).
 - If an alias already exists, it will be updated to the new path.
-- Target must be a file, not a directory. Pass the full path to the executable.
+- Target can be a file or a directory. Pass the full path to what you want to launch.
 
 ## Uninstall
 
