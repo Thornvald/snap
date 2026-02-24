@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,7 +28,7 @@ namespace snap {
 
 namespace fs = std::filesystem;
 
-static constexpr const char* VERSION = "1.0.4";
+static constexpr const char* VERSION = "1.0.5";
 
 namespace {
 
@@ -69,6 +70,47 @@ bool files_identical(const fs::path& lhs, const fs::path& rhs) {
     }
 
     return true;
+}
+
+std::string extract_reported_version(const std::string& output) {
+    std::istringstream lines(output);
+    std::string line;
+    while (std::getline(lines, line)) {
+        line = trim(line);
+        const std::string prefix = "snap ";
+        if (line.rfind(prefix, 0) == 0 && line.size() > prefix.size()) {
+            return trim(line.substr(prefix.size()));
+        }
+    }
+    return "";
+}
+
+#ifndef _WIN32
+std::string shell_quote(const std::string& value);
+#endif
+
+std::string get_binary_reported_version(const fs::path& binary_path) {
+#ifdef _WIN32
+    const std::string command = "\"" + binary_path.string() + "\" --version 2>nul";
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    const std::string command = shell_quote(binary_path.string()) + " --version 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) return "";
+
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    return extract_reported_version(output);
 }
 
 #ifdef _WIN32
@@ -653,6 +695,14 @@ int cmd_update() {
         return 1;
     }
 
+    const std::string downloaded_version = get_binary_reported_version(temp_path);
+    if (!downloaded_version.empty() && downloaded_version == VERSION) {
+        fs::remove(temp_path, ec);
+        ensure_bin_in_path();
+        std::cout << "  You already have the latest version (" << VERSION << ").\n";
+        return 0;
+    }
+
     if (files_identical(temp_path, installed_path)) {
         fs::remove(temp_path, ec);
         ensure_bin_in_path();
@@ -721,6 +771,15 @@ int cmd_update() {
         return 1;
     }
 
+    chmod(temp_path.c_str(), 0755);
+    const std::string downloaded_version = get_binary_reported_version(temp_path);
+    if (!downloaded_version.empty() && downloaded_version == VERSION) {
+        fs::remove(temp_path, ec);
+        ensure_bin_in_path();
+        std::cout << "  You already have the latest version (" << VERSION << ").\n";
+        return 0;
+    }
+
     if (files_identical(temp_path, installed_path)) {
         fs::remove(temp_path, ec);
         ensure_bin_in_path();
@@ -728,7 +787,6 @@ int cmd_update() {
         return 0;
     }
 
-    chmod(temp_path.c_str(), 0755);
     fs::rename(temp_path, installed_path, ec);
     if (ec) {
         ec.clear();
