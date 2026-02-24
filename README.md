@@ -26,12 +26,34 @@ cmake --build build --config Release
 ## Usage
 
 ```
-snap <alias> <path>       Bind an alias to a file path
+snap <alias> <path>       Bind an alias to a file, folder, or executable path
 snap list                 List all registered aliases
 snap remove <alias>       Remove an alias
+snap update               Update snap to the latest release
+snap uninstall            Uninstall snap and remove aliases
 snap --help               Show help
 snap --version            Show version
 ```
+
+## Update
+
+Use this command:
+
+```bash
+snap update
+```
+
+snap downloads the latest release for your platform and replaces the installed binary in `~/.snap/bin/`.
+
+## Uninstall
+
+Use this command:
+
+```bash
+snap uninstall
+```
+
+This removes snap aliases, removes snap from your user PATH, and deletes `~/.snap/`.
 
 ## What happens on first run?
 
@@ -64,14 +86,6 @@ After the first run, open a new terminal and snap works globally. The self-insta
 - Aliases can contain letters, numbers, hyphens (`-`), and underscores (`_`).
 - If an alias already exists, it will be updated to the new path.
 - Target can be a file or a directory. Pass the full path to what you want to launch.
-
-## Uninstall
-
-1. Run `snap list` and `snap remove` for each alias.
-2. Remove the `~/.snap/` directory.
-3. Remove the PATH entry:
-   - Windows: remove `%USERPROFILE%\.snap\bin` from your user PATH environment variable.
-   - macOS/Linux: remove the `export PATH=.../.snap/bin...` line from your shell rc files.
 
 ## License
 

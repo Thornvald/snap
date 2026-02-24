@@ -5,6 +5,8 @@
  *   snap <alias> <path-to-target>       Register an alias
  *   snap list                           List all registered aliases
  *   snap remove <alias>                 Remove an alias
+ *   snap uninstall                      Uninstall snap and aliases
+ *   snap update                         Update snap to latest release
  *   snap --help                         Show help
  *   snap --version                      Show version
  *
@@ -38,7 +40,7 @@ namespace fs = std::filesystem;
 
 // ── version ────────────────────────────────────────────────────────────────
 
-static constexpr const char* VERSION = "1.0.1";
+static constexpr const char* VERSION = "1.0.2";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -67,6 +69,31 @@ static fs::path get_bin_dir() {
 
 static fs::path get_registry_path() {
     return get_snap_dir() / "aliases.json";
+}
+
+static fs::path get_installed_binary_path() {
+#ifdef _WIN32
+    return get_bin_dir() / "snap.exe";
+#else
+    return get_bin_dir() / "snap";
+#endif
+}
+
+static std::string get_latest_asset_url() {
+    const std::string base = "https://github.com/Thornvald/snap/releases/latest/download/";
+#ifdef _WIN32
+    return base + "snap-windows-x64.exe";
+#elif defined(__APPLE__)
+    return base + "snap-macos-universal";
+#elif defined(__linux__)
+  #if defined(__aarch64__) || defined(__arm64__)
+    return base + "snap-linux-arm64";
+  #else
+    return base + "snap-linux-x64";
+  #endif
+#else
+    return "";
+#endif
 }
 
 // ── minimal JSON registry (no deps) ───────────────────────────────────────
@@ -243,6 +270,22 @@ static bool path_contains(const std::string& pathVar, const std::string& dir) {
     return false;
 }
 
+static std::string normalize_windows_path_token(std::string token) {
+    token = trim(token);
+    if (token.size() >= 2 && token.front() == '"' && token.back() == '"') {
+        token = token.substr(1, token.size() - 2);
+    }
+
+    std::replace(token.begin(), token.end(), '/', '\\');
+    while (!token.empty() && (token.back() == '\\' || token.back() == '/')) {
+        token.pop_back();
+    }
+
+    std::transform(token.begin(), token.end(), token.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return token;
+}
+
 static void ensure_bin_in_path() {
     std::string binDir = get_bin_dir().string();
     std::string userPath = get_user_path();
@@ -253,6 +296,37 @@ static void ensure_bin_in_path() {
     if (!newPath.empty() && newPath.back() != ';') newPath += ';';
     newPath += binDir;
 
+    set_user_path(newPath);
+}
+
+static void remove_bin_from_path() {
+    std::string userPath = get_user_path();
+    if (userPath.empty()) return;
+
+    const std::string binNorm = normalize_windows_path_token(get_bin_dir().string());
+    std::istringstream ss(userPath);
+    std::string token;
+    std::vector<std::string> kept;
+    bool removed = false;
+
+    while (std::getline(ss, token, ';')) {
+        std::string trimmed = trim(token);
+        if (trimmed.empty()) continue;
+
+        if (normalize_windows_path_token(trimmed) == binNorm) {
+            removed = true;
+            continue;
+        }
+        kept.push_back(trimmed);
+    }
+
+    if (!removed) return;
+
+    std::string newPath;
+    for (size_t i = 0; i < kept.size(); ++i) {
+        if (i > 0) newPath += ';';
+        newPath += kept[i];
+    }
     set_user_path(newPath);
 }
 
@@ -302,6 +376,45 @@ static void ensure_bin_in_path() {
 
     if (added) {
         std::cout << "  Restart your terminal or run: source ~/.bashrc\n";
+    }
+}
+
+static void erase_all(std::string& text, const std::string& pattern) {
+    if (pattern.empty()) return;
+    size_t pos = 0;
+    while ((pos = text.find(pattern, pos)) != std::string::npos) {
+        text.erase(pos, pattern.size());
+    }
+}
+
+static void remove_bin_from_path() {
+    fs::path binDir = get_bin_dir();
+    std::vector<std::string> rcFiles = {".bashrc", ".zshrc", ".profile"};
+    fs::path home = get_home_dir();
+    const std::string block = "# snap - alias manager\nexport PATH=\"" + binDir.string() + ":$PATH\"\n";
+
+    for (const auto& rc : rcFiles) {
+        fs::path rcPath = home / rc;
+        if (!fs::exists(rcPath)) continue;
+
+        std::ifstream in(rcPath);
+        if (!in.is_open()) continue;
+
+        std::string content((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+        in.close();
+
+        std::string updated = content;
+        erase_all(updated, "\n" + block);
+        erase_all(updated, block);
+
+        if (updated == content) continue;
+
+        std::ofstream out(rcPath, std::ios::trunc);
+        if (out.is_open()) {
+            out << updated;
+            out.close();
+        }
     }
 }
 
@@ -469,11 +582,13 @@ static bool self_install() {
     std::cout << "    snap <alias> <path>     Bind an alias to a target path\n";
     std::cout << "    snap list               List all your aliases\n";
     std::cout << "    snap remove <alias>     Remove an alias\n";
+    std::cout << "    snap uninstall          Uninstall snap\n";
+    std::cout << "    snap update             Update snap\n";
     std::cout << "    snap --help             Full help\n";
     std::cout << "  ---------------------------------------------------------\n";
     std::cout << "  Source: https://github.com/Thornvald/snap\n";
     std::cout << "  All data stored in: " << get_snap_dir().string() << "\n";
-    std::cout << "  To uninstall, just delete that folder and remove it from PATH.\n";
+    std::cout << "  To uninstall, run: snap uninstall\n";
     std::cout << "\n";
 
 #ifdef _WIN32
@@ -494,6 +609,8 @@ static void print_help() {
     snap <alias> <path>     Register an alias for a file, folder, or executable
     snap list               List all registered aliases
     snap remove <alias>     Remove a registered alias
+    snap uninstall          Uninstall snap and remove all aliases
+    snap update             Update snap to latest release
     snap --help, -h         Show this help message
     snap --version, -v      Show version
 
@@ -502,6 +619,8 @@ static void print_help() {
     snap notes "C:\Users\me\Documents\todo.txt"
     snap list
     snap remove game
+    snap uninstall
+    snap update
 
   After adding an alias, open a new terminal and type the alias name
   to launch the application.
@@ -615,12 +734,193 @@ static int cmd_remove(const std::string& alias) {
     return 0;
 }
 
+static int cmd_uninstall() {
+    std::cout << "  Uninstalling snap...\n";
+    remove_bin_from_path();
+
+#ifdef _WIN32
+    fs::path snapDir = get_snap_dir();
+    std::error_code ec;
+    if (!fs::exists(snapDir, ec)) {
+        std::cout << "  snap is already removed.\n";
+        return 0;
+    }
+
+    // Remove aliases and registry first.
+    for (const auto& entry : load_registry()) {
+        remove_shim(entry.alias);
+    }
+    fs::remove(get_registry_path(), ec);
+
+    // Schedule full directory removal after this process exits.
+    std::string cmd = "cmd.exe /c ping 127.0.0.1 -n 2 >nul && rmdir /s /q \"" + snapDir.string() + "\"";
+    STARTUPINFOA si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+
+    std::vector<char> cmdLine(cmd.begin(), cmd.end());
+    cmdLine.push_back('\0');
+
+    BOOL started = CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                                  DETACHED_PROCESS | CREATE_NO_WINDOW,
+                                  nullptr, nullptr, &si, &pi);
+
+    if (started) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        std::cout << "  Removed PATH entry and scheduled deletion of " << snapDir.string() << "\n";
+        std::cout << "  Open a new terminal. snap is now uninstalled.\n";
+        return 0;
+    }
+
+    std::cerr << "error: could not schedule removal of " << snapDir.string() << "\n";
+    std::cerr << "  Please delete that folder manually. PATH entry was removed.\n";
+    return 1;
+#else
+    std::error_code ec;
+    fs::remove_all(get_snap_dir(), ec);
+    if (ec) {
+        std::cerr << "error: could not remove " << get_snap_dir() << ": " << ec.message() << "\n";
+        return 1;
+    }
+
+    std::cout << "  Removed PATH entry and deleted " << get_snap_dir().string() << "\n";
+    std::cout << "  Open a new terminal. snap is now uninstalled.\n";
+    return 0;
+#endif
+}
+
+static int cmd_update() {
+    const std::string url = get_latest_asset_url();
+    if (url.empty()) {
+        std::cerr << "error: this platform is not supported for snap update.\n";
+        return 1;
+    }
+
+    std::error_code ec;
+    fs::create_directories(get_bin_dir(), ec);
+    if (ec) {
+        std::cerr << "error: could not create " << get_bin_dir() << ": " << ec.message() << "\n";
+        return 1;
+    }
+
+    const fs::path installedPath = get_installed_binary_path();
+    const fs::path tempPath = get_snap_dir() /
+#ifdef _WIN32
+        "snap.update.exe";
+#else
+        "snap.update";
+#endif
+
+    std::cout << "  Checking latest release...\n";
+    std::cout << "  Downloading: " << url << "\n";
+
+#ifdef _WIN32
+    std::string downloadCmd =
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+        "try { "
+        "$ProgressPreference='SilentlyContinue'; "
+        "Invoke-WebRequest -UseBasicParsing -Uri '" + url + "' -OutFile '" + tempPath.string() + "'; "
+        "exit 0 "
+        "} catch { "
+        "exit 1 "
+        "}\"";
+
+    if (std::system(downloadCmd.c_str()) != 0 || !fs::exists(tempPath)) {
+        std::cerr << "error: failed to download update package.\n";
+        return 1;
+    }
+
+    fs::path selfPath = get_self_path();
+    auto selfCanon = fs::weakly_canonical(selfPath, ec);
+    ec.clear();
+    auto installedCanon = fs::weakly_canonical(installedPath, ec);
+    bool runningInstalled = (!ec && selfCanon == installedCanon);
+
+    if (runningInstalled) {
+        std::string scriptCmd =
+            "cmd.exe /c ping 127.0.0.1 -n 2 >nul && move /Y \"" + tempPath.string() + "\" \"" + installedPath.string() +
+            "\" >nul";
+
+        STARTUPINFOA si{};
+        PROCESS_INFORMATION pi{};
+        si.cb = sizeof(si);
+        std::vector<char> cmdLine(scriptCmd.begin(), scriptCmd.end());
+        cmdLine.push_back('\0');
+
+        BOOL started = CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                                      DETACHED_PROCESS | CREATE_NO_WINDOW,
+                                      nullptr, nullptr, &si, &pi);
+        if (!started) {
+            std::cerr << "error: update downloaded but could not schedule replacement.\n";
+            std::cerr << "  Temporary file: " << tempPath << "\n";
+            return 1;
+        }
+
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        ensure_bin_in_path();
+        std::cout << "  Update downloaded.\n";
+        std::cout << "  Close this terminal and open a new one.\n";
+        std::cout << "  Run 'snap --version' to verify.\n";
+        return 0;
+    }
+
+    fs::copy_file(tempPath, installedPath, fs::copy_options::overwrite_existing, ec);
+    fs::remove(tempPath, ec);
+    if (ec) {
+        std::cerr << "error: could not install update: " << ec.message() << "\n";
+        return 1;
+    }
+
+    ensure_bin_in_path();
+    std::cout << "  Updated snap at " << installedPath.string() << "\n";
+    std::cout << "  Run 'snap --version' to verify.\n";
+    return 0;
+#else
+    std::string downloadCmd =
+        "curl -fsSL \"" + url + "\" -o \"" + tempPath.string() + "\"";
+    int code = std::system(downloadCmd.c_str());
+    if (code != 0 || !fs::exists(tempPath)) {
+        downloadCmd = "wget -qO \"" + tempPath.string() + "\" \"" + url + "\"";
+        code = std::system(downloadCmd.c_str());
+    }
+
+    if (code != 0 || !fs::exists(tempPath)) {
+        std::cerr << "error: failed to download update package (tried curl/wget).\n";
+        return 1;
+    }
+
+    chmod(tempPath.c_str(), 0755);
+
+    fs::rename(tempPath, installedPath, ec);
+    if (ec) {
+        ec.clear();
+        fs::copy_file(tempPath, installedPath, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "error: could not install update: " << ec.message() << "\n";
+            return 1;
+        }
+        fs::remove(tempPath, ec);
+    }
+
+    chmod(installedPath.c_str(), 0755);
+    ensure_bin_in_path();
+    std::cout << "  Updated snap at " << installedPath.string() << "\n";
+    std::cout << "  Run 'snap --version' to verify.\n";
+    return 0;
+#endif
+}
+
 // ── main ──────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
+    std::string cmd = argc >= 2 ? argv[1] : "";
+
     // Self-install on first run: copy binary to ~/.snap/bin/ and add to PATH.
     // If installation just happened, exit so user opens a new terminal.
-    if (self_install()) {
+    if (cmd != "uninstall" && cmd != "update" && self_install()) {
         return 0;
     }
 
@@ -628,8 +928,6 @@ int main(int argc, char* argv[]) {
         print_help();
         return 0;
     }
-
-    std::string cmd(argv[1]);
 
     if (cmd == "--help" || cmd == "-h") {
         print_help();
@@ -651,6 +949,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         return cmd_remove(argv[2]);
+    }
+
+    if (cmd == "uninstall") {
+        return cmd_uninstall();
+    }
+
+    if (cmd == "update") {
+        return cmd_update();
     }
 
     // Default: snap <alias> <path>
