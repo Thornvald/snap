@@ -46,6 +46,7 @@ snap update
 snap downloads the latest release for your platform and replaces the installed binary in `~/.snap/bin/`.
 
 If you run a copy of `snap` from another location, it also syncs that copy into `~/.snap/bin/`.
+If your installed binary is already current, `snap update` reports that and does not re-queue replacement.
 
 ## Uninstall
 

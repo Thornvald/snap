@@ -4,6 +4,7 @@
 #include "registry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -26,7 +27,7 @@ namespace snap {
 
 namespace fs = std::filesystem;
 
-static constexpr const char* VERSION = "1.0.3";
+static constexpr const char* VERSION = "1.0.4";
 
 namespace {
 
@@ -36,6 +37,38 @@ std::string trim(const std::string& value) {
 
     const size_t end = value.find_last_not_of(" \t\r\n");
     return value.substr(start, end - start + 1);
+}
+
+bool files_identical(const fs::path& lhs, const fs::path& rhs) {
+    std::error_code ec;
+    if (!fs::exists(lhs, ec) || !fs::exists(rhs, ec)) return false;
+
+    const auto lhs_size = fs::file_size(lhs, ec);
+    if (ec) return false;
+    const auto rhs_size = fs::file_size(rhs, ec);
+    if (ec || lhs_size != rhs_size) return false;
+
+    std::ifstream a(lhs, std::ios::binary);
+    std::ifstream b(rhs, std::ios::binary);
+    if (!a.is_open() || !b.is_open()) return false;
+
+    std::array<char, 8192> abuf{};
+    std::array<char, 8192> bbuf{};
+    while (a && b) {
+        a.read(abuf.data(), static_cast<std::streamsize>(abuf.size()));
+        b.read(bbuf.data(), static_cast<std::streamsize>(bbuf.size()));
+
+        const std::streamsize acount = a.gcount();
+        const std::streamsize bcount = b.gcount();
+        if (acount != bcount) return false;
+        if (acount <= 0) break;
+
+        if (!std::equal(abuf.begin(), abuf.begin() + acount, bbuf.begin())) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 #ifdef _WIN32
@@ -620,6 +653,13 @@ int cmd_update() {
         return 1;
     }
 
+    if (files_identical(temp_path, installed_path)) {
+        fs::remove(temp_path, ec);
+        ensure_bin_in_path();
+        std::cout << "  You already have the latest version (" << VERSION << ").\n";
+        return 0;
+    }
+
     const fs::path self_path = get_self_path();
     fs::path self_canon = fs::weakly_canonical(self_path, ec);
     ec.clear();
@@ -651,8 +691,8 @@ int cmd_update() {
         CloseHandle(pi.hThread);
 
         ensure_bin_in_path();
-        std::cout << "  Update downloaded.\n";
-        std::cout << "  Close this terminal and open a new one.\n";
+        std::cout << "  Update downloaded and queued.\n";
+        std::cout << "  It will apply right after this process exits.\n";
         std::cout << "  Run 'snap --version' to verify.\n";
         return 0;
     }
@@ -679,6 +719,13 @@ int cmd_update() {
     if (code != 0 || !fs::exists(temp_path)) {
         std::cerr << "error: failed to download update package (tried curl/wget).\n";
         return 1;
+    }
+
+    if (files_identical(temp_path, installed_path)) {
+        fs::remove(temp_path, ec);
+        ensure_bin_in_path();
+        std::cout << "  You already have the latest version (" << VERSION << ").\n";
+        return 0;
     }
 
     chmod(temp_path.c_str(), 0755);
