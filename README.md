@@ -12,6 +12,8 @@ That's it.
 
 Download the binary for your platform from [Releases](https://github.com/Thornvald/snap/releases), run it once, and snap installs itself. Open a new terminal and you're ready.
 
+If snap is already installed and you run another `snap.exe`, it prints a reminder that you can use `snap` directly from cmd, PowerShell, or terminal.
+
 ### Build from source
 
 Requirements: CMake 3.16+, a C++17 compiler (MSVC, GCC, Clang).

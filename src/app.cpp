@@ -29,7 +29,7 @@ namespace snap {
 
 namespace fs = std::filesystem;
 
-static constexpr const char* VERSION = "1.0.6";
+static constexpr const char* VERSION = "1.0.7";
 
 namespace {
 
@@ -478,13 +478,15 @@ bool self_install(bool interactive_no_args) {
     const fs::path installed_path = get_installed_binary_path();
     std::error_code ec;
     const bool installed_exists = fs::exists(installed_path, ec);
+    bool running_installed_binary = false;
 
     if (installed_exists) {
         ec.clear();
         const fs::path self_canon = fs::weakly_canonical(self_path, ec);
         ec.clear();
         const fs::path installed_canon = fs::weakly_canonical(installed_path, ec);
-        if (!ec && self_canon == installed_canon) return false;
+        running_installed_binary = (!ec && self_canon == installed_canon);
+        if (running_installed_binary) return false;
     }
 
     if (!installed_exists) {
@@ -561,6 +563,15 @@ bool self_install(bool interactive_no_args) {
     chmod(installed_path.c_str(), 0755);
 #endif
     ensure_bin_in_path();
+
+    if (interactive_no_args && installed_exists && !running_installed_binary) {
+        std::cout << "\n";
+        std::cout << "  snap is already installed on this PC.\n";
+        std::cout << "  You can use it by typing 'snap' in cmd, PowerShell, or terminal.\n";
+        std::cout << "  Installed location: " << installed_path.string() << "\n";
+        return true;
+    }
+
     return false;
 }
 
