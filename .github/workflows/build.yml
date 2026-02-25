@@ -109,6 +109,8 @@ jobs:
           cp artifacts/snap-linux-arm64/snap release/snap-linux-arm64
           cp artifacts/snap-macos-universal/snap release/snap-macos-universal
           chmod +x release/snap-linux-x64 release/snap-linux-arm64 release/snap-macos-universal
+          cd release
+          sha256sum snap-windows-x64.exe snap-linux-x64 snap-linux-arm64 snap-macos-universal > checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2

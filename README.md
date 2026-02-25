@@ -44,6 +44,7 @@ snap update
 ```
 
 snap downloads the latest release for your platform and replaces the installed binary in `~/.snap/bin/`.
+Before installing, it verifies the downloaded binary using SHA256 against `checksums.txt` from the release.
 
 If you run a copy of `snap` from another location, it also syncs that copy into `~/.snap/bin/`.
 If your installed binary is already current, `snap update` reports that and does not re-queue replacement.
@@ -74,7 +75,7 @@ It does three things:
 
 After the first run, open a new terminal and snap works globally. The self-install only runs **once**. Subsequent runs go straight to normal operation.
 
-> **This is not malware.** snap is open-source ([MIT licensed](LICENSE)), has zero network activity, and all data is stored locally in `~/.snap/`. You can inspect the source code in [`src/app.cpp`](src/app.cpp), [`src/paths.cpp`](src/paths.cpp), and [`src/registry.cpp`](src/registry.cpp).
+Source files: [`src/app.cpp`](src/app.cpp), [`src/paths.cpp`](src/paths.cpp), [`src/registry.cpp`](src/registry.cpp), [`src/sha256.cpp`](src/sha256.cpp).
 
 ## How it works
 

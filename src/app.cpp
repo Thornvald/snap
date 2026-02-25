@@ -2,6 +2,7 @@
 
 #include "paths.hpp"
 #include "registry.hpp"
+#include "sha256.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,7 +29,7 @@ namespace snap {
 
 namespace fs = std::filesystem;
 
-static constexpr const char* VERSION = "1.0.5";
+static constexpr const char* VERSION = "1.0.6";
 
 namespace {
 
@@ -111,6 +112,85 @@ std::string get_binary_reported_version(const fs::path& binary_path) {
     pclose(pipe);
 #endif
     return extract_reported_version(output);
+}
+
+std::string to_lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+bool is_sha256_hex(const std::string& value) {
+    if (value.size() != 64) return false;
+    return std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return std::isxdigit(c) != 0;
+    });
+}
+
+std::string read_text_file(const fs::path& file_path) {
+    std::ifstream in(file_path);
+    if (!in.is_open()) return "";
+
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+}
+
+std::string extract_expected_sha256(const std::string& checksums_text,
+                                    const std::string& asset_name) {
+    std::istringstream lines(checksums_text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+
+        std::istringstream parts(line);
+        std::string hash;
+        if (!(parts >> hash)) continue;
+        if (!is_sha256_hex(hash)) continue;
+
+        std::string target_name;
+        if (!(parts >> target_name)) continue;
+        if (!target_name.empty() && target_name.front() == '*') {
+            target_name.erase(target_name.begin());
+        }
+
+        if (target_name == asset_name) {
+            return to_lower_ascii(hash);
+        }
+    }
+
+    return "";
+}
+
+bool download_file(const std::string& url, const fs::path& out_path) {
+#ifdef _WIN32
+    auto escape_ps_single = [](const std::string& value) {
+        std::string escaped;
+        escaped.reserve(value.size());
+        for (char c : value) {
+            if (c == '\'') escaped += "''";
+            else escaped += c;
+        }
+        return escaped;
+    };
+
+    const std::string command =
+        "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+        "try { $ProgressPreference='SilentlyContinue'; "
+        "Invoke-WebRequest -UseBasicParsing -Uri '" + escape_ps_single(url) +
+        "' -OutFile '" + escape_ps_single(out_path.string()) +
+        "'; exit 0 } catch { exit 1 }\"";
+
+    return std::system(command.c_str()) == 0 && fs::exists(out_path);
+#else
+    std::string command =
+        "curl -fsSL " + shell_quote(url) + " -o " + shell_quote(out_path.string());
+
+    if (std::system(command.c_str()) == 0 && fs::exists(out_path)) return true;
+
+    command = "wget -qO " + shell_quote(out_path.string()) + " " + shell_quote(url);
+    return std::system(command.c_str()) == 0 && fs::exists(out_path);
+#endif
 }
 
 #ifdef _WIN32
@@ -660,8 +740,11 @@ int cmd_uninstall() {
 }
 
 int cmd_update() {
-    const std::string url = get_latest_asset_url();
-    if (url.empty()) {
+    const std::string asset_url = get_latest_asset_url();
+    const std::string asset_name = get_latest_asset_name();
+    const std::string checksums_url = get_latest_checksums_url();
+
+    if (asset_url.empty() || asset_name.empty()) {
         std::cerr << "error: this platform is not supported for snap update.\n";
         return 1;
     }
@@ -679,32 +762,70 @@ int cmd_update() {
 #else
     const fs::path temp_path = get_snap_dir() / "snap.update";
 #endif
+    const fs::path checksums_path = get_snap_dir() / "checksums.txt";
+
+    const auto cleanup = [&](bool remove_package) {
+        std::error_code ignored;
+        fs::remove(checksums_path, ignored);
+        if (remove_package) fs::remove(temp_path, ignored);
+    };
 
     std::cout << "  Checking latest release...\n";
-    std::cout << "  Downloading: " << url << "\n";
-
-#ifdef _WIN32
-    const std::string download_cmd =
-        "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-        "try { $ProgressPreference='SilentlyContinue'; "
-        "Invoke-WebRequest -UseBasicParsing -Uri '" + url + "' -OutFile '" + temp_path.string() + "'; "
-        "exit 0 } catch { exit 1 }\"";
-
-    if (std::system(download_cmd.c_str()) != 0 || !fs::exists(temp_path)) {
+    std::cout << "  Downloading: " << asset_url << "\n";
+    if (!download_file(asset_url, temp_path)) {
         std::cerr << "error: failed to download update package.\n";
         return 1;
     }
 
+    if (!download_file(checksums_url, checksums_path)) {
+        cleanup(true);
+        std::cerr << "error: failed to download checksums file.\n";
+        return 1;
+    }
+
+    const std::string checksums_text = read_text_file(checksums_path);
+    if (checksums_text.empty()) {
+        cleanup(true);
+        std::cerr << "error: checksums file is empty or unreadable.\n";
+        return 1;
+    }
+
+    const std::string expected_sha = extract_expected_sha256(checksums_text, asset_name);
+    if (expected_sha.empty()) {
+        cleanup(true);
+        std::cerr << "error: could not find SHA256 for " << asset_name << " in checksums file.\n";
+        return 1;
+    }
+
+    const std::string actual_sha = to_lower_ascii(sha256_file_hex(temp_path));
+    if (!is_sha256_hex(actual_sha)) {
+        cleanup(true);
+        std::cerr << "error: could not compute SHA256 for downloaded package.\n";
+        return 1;
+    }
+
+    if (actual_sha != expected_sha) {
+        cleanup(true);
+        std::cerr << "error: SHA256 verification failed.\n";
+        std::cerr << "  Expected: " << expected_sha << "\n";
+        std::cerr << "  Actual:   " << actual_sha << "\n";
+        return 1;
+    }
+
+    cleanup(false);
+    std::cout << "  SHA256 verified.\n";
+
+#ifdef _WIN32
     const std::string downloaded_version = get_binary_reported_version(temp_path);
     if (!downloaded_version.empty() && downloaded_version == VERSION) {
-        fs::remove(temp_path, ec);
+        cleanup(true);
         ensure_bin_in_path();
         std::cout << "  You already have the latest version (" << VERSION << ").\n";
         return 0;
     }
 
     if (files_identical(temp_path, installed_path)) {
-        fs::remove(temp_path, ec);
+        cleanup(true);
         ensure_bin_in_path();
         std::cout << "  You already have the latest version (" << VERSION << ").\n";
         return 0;
@@ -759,29 +880,17 @@ int cmd_update() {
     std::cout << "  Run 'snap --version' to verify.\n";
     return 0;
 #else
-    std::string download_cmd = "curl -fsSL \"" + url + "\" -o \"" + temp_path.string() + "\"";
-    int code = std::system(download_cmd.c_str());
-    if (code != 0 || !fs::exists(temp_path)) {
-        download_cmd = "wget -qO \"" + temp_path.string() + "\" \"" + url + "\"";
-        code = std::system(download_cmd.c_str());
-    }
-
-    if (code != 0 || !fs::exists(temp_path)) {
-        std::cerr << "error: failed to download update package (tried curl/wget).\n";
-        return 1;
-    }
-
     chmod(temp_path.c_str(), 0755);
     const std::string downloaded_version = get_binary_reported_version(temp_path);
     if (!downloaded_version.empty() && downloaded_version == VERSION) {
-        fs::remove(temp_path, ec);
+        cleanup(true);
         ensure_bin_in_path();
         std::cout << "  You already have the latest version (" << VERSION << ").\n";
         return 0;
     }
 
     if (files_identical(temp_path, installed_path)) {
-        fs::remove(temp_path, ec);
+        cleanup(true);
         ensure_bin_in_path();
         std::cout << "  You already have the latest version (" << VERSION << ").\n";
         return 0;

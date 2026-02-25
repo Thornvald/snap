@@ -41,21 +41,29 @@ std::filesystem::path get_installed_binary_path() {
 #endif
 }
 
-std::string get_latest_asset_url() {
-    const std::string base = "https://github.com/Thornvald/snap/releases/latest/download/";
+std::string get_latest_asset_name() {
 #ifdef _WIN32
-    return base + "snap-windows-x64.exe";
+    return "snap-windows-x64.exe";
 #elif defined(__APPLE__)
-    return base + "snap-macos-universal";
+    return "snap-macos-universal";
 #elif defined(__linux__)
   #if defined(__aarch64__) || defined(__arm64__)
-    return base + "snap-linux-arm64";
+    return "snap-linux-arm64";
   #else
-    return base + "snap-linux-x64";
+    return "snap-linux-x64";
   #endif
 #else
     return "";
 #endif
+}
+
+std::string get_latest_asset_url() {
+    const std::string base = "https://github.com/Thornvald/snap/releases/latest/download/";
+    return base + get_latest_asset_name();
+}
+
+std::string get_latest_checksums_url() {
+    return "https://github.com/Thornvald/snap/releases/latest/download/checksums.txt";
 }
 
 } // namespace snap
